@@ -1,0 +1,232 @@
+Multi-Agent Code Security Scanner — Project Explainer
+======================================================
+
+WHAT THIS PROJECT IS
+--------------------
+A pipeline of three AI agents that work together to scan source code
+(or web pages) for security vulnerabilities. Each agent handles one
+stage of the analysis, and they share a common memory object so each
+stage builds on the previous one. Think of it like an assembly line:
+recon gathers raw data, analysis interprets the risk, and reporting
+packages it into something a developer can act on.
+
+
+WHY MULTI-AGENT?
+----------------
+A single LLM call trying to do everything at once tends to:
+- Miss nuances when the input is large
+- Produce shallow analysis because it's juggling too many tasks
+- Give inconsistent output quality
+
+By splitting the work into three focused agents, each one gets:
+- A narrow, well-defined system prompt (better output quality)
+- A manageable chunk of input (no context overflow)
+- A clear responsibility (easy to debug, swap, or improve independently)
+
+
+PROJECT STRUCTURE
+-----------------
+security-agent-system/
+  agents/
+    reconAgent.js        — Agent 1: reads source, finds attack surface
+    analysisAgent.js     — Agent 2: classifies vulnerabilities, predicts risk
+    reportAgent.js       — Agent 3: writes the final report
+  memory/
+    sharedMemory.js      — shared state object all agents read/write
+  tools/
+    fileTools.js         — reads local files, lists directories
+    fetchTools.js        — fetches web pages, parses HTML with cheerio
+  orchestrator.js        — runs the three agents in sequence
+  index.js               — entry point, loads .env, wires everything
+  test-targets/
+    sample.js            — deliberately vulnerable Express app for testing
+  .env                   — GROQ_API_KEY, TARGET_TYPE, TARGET_PATH
+  package.json
+
+
+HOW THE PIPELINE WORKS (step by step)
+--------------------------------------
+
+1. ENTRY POINT (index.js)
+   - Loads environment variables from .env
+   - Reads TARGET_TYPE ("file" or "url") and TARGET_PATH
+   - Writes the target info into shared memory
+   - Calls orchestrator.runPipeline()
+
+2. SHARED MEMORY (sharedMemory.js)
+   - A plain JavaScript object with four keys:
+     target        — what to scan (file path or URL)
+     reconFindings — array of findings from Agent 1
+     riskPredictions — array of risk analyses from Agent 2
+     reportPath    — path to the written report from Agent 3
+   - Two functions: writeMemory(key, value) and readMemory()
+   - Every agent reads memory before building its prompt,
+     writes memory after getting its LLM response
+
+3. AGENT 1 — RECON (reconAgent.js)
+   - Reads the target from shared memory
+   - If target is a file: uses fileTools to read the file (or list
+     and read all code files in a directory)
+   - If target is a URL: uses fetchTools to HTTP GET the page, then
+     cheerio parses the HTML into structured data (title, scripts,
+     forms, comments, meta tags)
+   - Sends the raw source/structure to Groq with a system prompt
+     asking it to identify:
+     - Entry points (routes, endpoints, form handlers)
+     - User input locations (query params, body fields)
+     - External calls (DB queries, HTTP requests, exec calls)
+     - Authentication logic (or lack thereof)
+     - Risky patterns (eval, innerHTML, dynamic SQL, hardcoded creds)
+   - Parses the LLM's JSON response into an array of findings
+   - Writes findings to shared memory
+
+4. AGENT 2 — ANALYSIS (analysisAgent.js)
+   - Reads reconFindings from shared memory
+   - Sends them to Groq with a system prompt asking it to:
+     - Classify each finding into a vulnerability class
+       (XSS, SQLi, CSRF, command injection, path traversal, etc.)
+     - Rate severity (low/medium/high)
+     - Rate confidence (low/medium/high)
+     - Describe the risk in plain English
+     - Recommend a mitigation
+     - Predict how the risk could grow as the codebase evolves
+   - Parses the JSON response
+   - Writes riskPredictions to shared memory
+
+5. AGENT 3 — REPORT (reportAgent.js)
+   - Reads both reconFindings and riskPredictions from shared memory
+   - Sends both to Groq with a system prompt asking it to generate
+     a structured plain-text report with:
+     - Executive summary
+     - Findings table (ID, title, severity, confidence, location,
+       description, mitigation)
+     - Severity breakdown (counts of high/medium/low)
+     - Priority recommendations (top 3-5 fixes)
+     - Next steps for the developer
+   - Writes the report text to report.txt on disk
+   - Writes reportPath to shared memory
+
+6. ORCHESTRATOR (orchestrator.js)
+   - Simply calls the three agents in sequence:
+     reconAgent.run() -> analysisAgent.run() -> reportAgent.run()
+   - No branching, no parallelism in v1
+   - v2 idea: allow the analysis agent to loop back to recon if it
+     needs more detail on a specific file before finalizing
+
+
+TOOLS
+-----
+
+fileTools.js:
+  readSourceFile(path)
+    - Resolves the path, checks it exists, reads it with fs.readFileSync
+    - Returns the file contents as a UTF-8 string
+  listFiles(dir)
+    - Recursively walks a directory
+    - Returns an array of all file paths found
+    - Filters by common code extensions (.js, .ts, .py, .html, etc.)
+
+fetchTools.js:
+  fetchAndParseHTML(url)
+    - HTTP GETs the URL using node-fetch
+    - Loads the HTML into cheerio
+    - Extracts: page title, all <script> tags (inline vs external),
+      all <form> tags (action, method, input fields), all HTML comments,
+      all <meta> tags
+    - Returns a structured object (no exploit logic, pure recon)
+
+
+TEST TARGET (test-targets/sample.js)
+------------------------------------
+A deliberately vulnerable Express.js app containing:
+- SQL injection (string concatenation in query)
+- XSS (unescaped user input in HTML response)
+- Command injection (child_process.exec with user input)
+- Path traversal (user-controlled file path in readFileSync)
+- Hardcoded credentials (DB_PASSWORD, JWT_SECRET in source)
+- eval() with user input
+- Missing authentication on admin endpoints
+- No input validation anywhere
+
+This exists solely for testing the scanner against. It is never
+run as a real server.
+
+
+LEGAL AND ETHICAL SCOPE
+------------------------
+- Only scans code you own or have explicit permission to test
+- Only performs passive recon (reads code, parses HTML structure)
+- Never generates working exploit payloads or injection strings
+- Every agent's system prompt is scoped to "identify and explain
+  risk," not "produce an exploit"
+- The cheerio-based fetchTools only reads publicly accessible pages
+  and does not send payloads or attempt exploitation
+
+
+DESIGN DECISIONS
+----------------
+1. Groq SDK for LLM calls
+   - Chose Groq for fast inference and a generous free tier
+   - The model is configurable (currently set to openai/gpt-oss-120b)
+   - All three agents use the same model but with different system
+     prompts and temperature settings
+
+2. Shared memory as a plain object
+   - No database, no file-based cache, no message queue
+   - Simple and fast for a single-pipeline architecture
+   - Easy to extend: add new keys for v2 features
+
+3. JSON output from agents
+   - Each agent is prompted to return a JSON array
+   - Parsing is done with regex fallback (extracts [...] from response)
+   - If parsing fails, the raw text is stored as a single finding
+     so the pipeline never silently drops data
+
+4. Sequential orchestration
+   - v1 runs agents in strict order: recon -> analysis -> report
+   - This is correct because each agent depends on the previous one's
+     output
+   - v2 could add a feedback loop where analysis agent requests
+     additional recon on specific files before finalizing
+
+
+WHAT I'D TELL AN INTERVIEWER
+------------------------------
+"I built a multi-agent security scanning pipeline where three
+specialized AI agents share a common memory object and work in
+sequence to analyze source code for vulnerabilities.
+
+The first agent does recon: it reads the target code or fetches and
+parses a web page, then asks the LLM to identify entry points, user
+input locations, external calls, auth logic, and risky patterns.
+
+The second agent takes those findings and classifies them into
+vulnerability classes like XSS, SQLi, command injection, etc. It
+rates severity and confidence, describes the risk, and recommends
+mitigations.
+
+The third agent reads both sets of outputs and generates a structured
+plain-text report with a findings table, severity breakdown, and
+priority recommendations.
+
+The key design choices were:
+- Splitting the work into focused agents with narrow system prompts,
+  which produces better and more consistent LLM output than one
+  monolithic prompt
+- Using a shared memory object so each stage builds on the last
+  without needing a database or message queue
+- Keeping agents scoped to risk identification only — they never
+  produce exploit code or attack payloads
+- Making it extensible: v2 could add a feedback loop where the
+  analysis agent loops back to recon for more detail on specific
+  files before finalizing predictions"
+
+Future improvements I'd mention:
+- Adding a feedback loop between analysis and recon agents
+- Supporting batch scanning of multiple targets
+- Adding a cost tracker (tokens used per agent, per run)
+- Adding a cache layer so re-scanning the same unchanged files
+  skips the LLM call
+- Writing reports in Markdown or HTML instead of plain text
+- Adding a CLI with flags for target type, output format, model
+  selection, and verbosity
