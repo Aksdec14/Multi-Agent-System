@@ -29,9 +29,10 @@ export async function run() {
     retryableStatusCodes: [429, 500, 502, 503],
   });
   const textChunker = new TextChunker({
-    maxTokens: 3500,
+    maxTokens: 1500,
     tokensPerChar: 0.25,
     overlap: 100,
+    maxChunks: 5,
   });
 
   if (!mem.reconFindings || mem.reconFindings.length === 0) {
@@ -59,7 +60,7 @@ export async function run() {
             },
           ],
           temperature: 0.2,
-          max_tokens: 4096,
+          max_tokens: 2048,
         }),
       { context: `Analysis LLM call chunk ${index + 1}/${totalChunks}` }
     );
@@ -67,10 +68,20 @@ export async function run() {
     const responseText = completion.choices[0]?.message?.content || "[]";
     
     try {
-      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      let jsonStr = responseText;
+      
+      const codeBlockMatch = responseText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1];
+      }
+
+      const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      return [];
     } catch {
-      return [{ title: "Parse error", description: responseText, severity: "low", mitigation: "Review manually" }];
+      return [];
     }
   };
 

@@ -5,9 +5,10 @@
 
 export class TextChunker {
   constructor(options = {}) {
-    this.maxTokens = options.maxTokens || 6000;
+    this.maxTokens = options.maxTokens || 1500;
     this.tokensPerChar = options.tokensPerChar || 0.25;
-    this.overlap = options.overlap || 200;
+    this.overlap = options.overlap || 100;
+    this.maxChunks = options.maxChunks || 5;
   }
 
   /**
@@ -107,13 +108,20 @@ export class TextChunker {
 
   /**
    * Process chunks with an async function and combine results
+   * Respects maxChunks limit to prevent excessive API calls
    * @param {string} content
    * @param {Function} processFn - Async function to process each chunk
    * @param {object} options
    * @returns {Promise<any[]>}
    */
   async processChunks(content, processFn, options = {}) {
-    const chunks = this.chunk(content, options);
+    let chunks = this.chunk(content, options);
+
+    if (chunks.length > this.maxChunks) {
+      console.warn(`[TextChunker] Too many chunks (${chunks.length}), truncating to ${this.maxChunks}`);
+      chunks = chunks.slice(0, this.maxChunks);
+    }
+
     const results = [];
 
     for (let i = 0; i < chunks.length; i++) {

@@ -31,9 +31,10 @@ export async function run() {
     retryableStatusCodes: [429, 500, 502, 503],
   });
   const textChunker = new TextChunker({
-    maxTokens: 3500,
+    maxTokens: 1500,
     tokensPerChar: 0.25,
     overlap: 100,
+    maxChunks: 5,
   });
   let content = "";
 
@@ -85,7 +86,7 @@ export async function run() {
             { role: "user", content: `Analyze the following source code / page structure and produce your recon findings as a JSON array:\n\n${chunk}` },
           ],
           temperature: 0.2,
-          max_tokens: 4096,
+          max_tokens: 2048,
         }),
       { context: `Recon LLM call chunk ${index + 1}/${totalChunks}` }
     );
@@ -93,10 +94,21 @@ export async function run() {
     const responseText = completion.choices[0]?.message?.content || "[]";
     
     try {
-      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-      return jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+      let jsonStr = responseText;
+      
+      const codeBlockMatch = responseText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1];
+      }
+
+      const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      
+      return [{ category: "info", location: "n/a", detail: responseText.slice(0, 500), initialSeverity: "low" }];
     } catch {
-      return [{ category: "info", location: "n/a", detail: responseText, initialSeverity: "low" }];
+      return [{ category: "info", location: "n/a", detail: responseText.slice(0, 500), initialSeverity: "low" }];
     }
   };
 

@@ -5,7 +5,7 @@ import { readMemory, writeMemory } from "../memory/sharedMemory.js";
 import { RetryHandler } from "../tools/retryHandler.js";
 import { TextChunker } from "../tools/textChunker.js";
 
-const SYSTEM_PROMPT = `You are a reporting agent. Given recon findings, risk predictions, API test results, and architecture diagrams from a security scanning pipeline, write a clear, structured security report suitable for a developer to act on.
+const SYSTEM_PROMPT_SINGLE = `You are a reporting agent. Given recon findings, risk predictions, API test results, and architecture diagrams from a security scanning pipeline, write a clear, structured security report suitable for a developer to act on.
 
 Your report should include:
 1. Executive Summary — 2-4 sentences on overall security posture
@@ -22,6 +22,8 @@ Format the report in plain text with clear section headers and consistent format
 The tone should be professional but accessible — write for a developer, not a compliance officer.
 Do NOT include exploit code or attack payloads in the report.`;
 
+const SYSTEM_PROMPT_CHUNK = `You are a reporting agent. You are receiving a PORTION of scanning results (not the full set). Write ONLY the findings section for this portion — a numbered list of findings with: ID, Title, Severity, Location, Description, Mitigation. Do NOT write an Executive Summary, Severity Breakdown, or Next Steps — those will be added later from the full data.`;
+
 export async function run() {
   console.log("[Report Agent] Starting report generation...");
   const mem = readMemory();
@@ -31,9 +33,10 @@ export async function run() {
     retryableStatusCodes: [429, 500, 502, 503],
   });
   const textChunker = new TextChunker({
-    maxTokens: 3500,
+    maxTokens: 1500,
     tokensPerChar: 0.25,
     overlap: 100,
+    maxChunks: 5,
   });
 
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -46,24 +49,34 @@ ARCHITECTURE DIAGRAMS:
 - Description: ${mem.architectureDiagrams.description || 'N/A'}
 ` : '';
 
-  const combinedData = `RECON FINDINGS:\n${JSON.stringify(mem.reconFindings, null, 2)}\n\nRISK PREDICTIONS:\n${JSON.stringify(mem.riskPredictions, null, 2)}\n\nAPI ENDPOINTS DISCOVERED:\n${JSON.stringify(mem.apiEndpoints, null, 2)}\n\nAPI VULNERABILITIES FOUND:\n${JSON.stringify(mem.apiTestResults, null, 2)}\n${architectureData}`;
+  const truncate = (str, max) => {
+    if (!str) return '';
+    return str.length > max ? str.slice(0, max) + '\n[TRUNCATED]' : str;
+  };
+
+  const combinedData = `RECON FINDINGS:\n${truncate(JSON.stringify(mem.reconFindings, null, 2), 3000)}\n\nRISK PREDICTIONS:\n${truncate(JSON.stringify(mem.riskPredictions, null, 2), 3000)}\n\nAPI ENDPOINTS DISCOVERED:\n${truncate(JSON.stringify(mem.apiEndpoints, null, 2), 2000)}\n\nAPI VULNERABILITIES FOUND:\n${truncate(JSON.stringify(mem.apiTestResults, null, 2), 2000)}\n${architectureData}`;
 
   const processChunk = async (chunk, index, totalChunks) => {
     console.log(`[Report Agent] Processing chunk ${index + 1}/${totalChunks}`);
+    
+    const isSingleChunk = totalChunks === 1;
+    const prompt = isSingleChunk ? SYSTEM_PROMPT_SINGLE : SYSTEM_PROMPT_CHUNK;
     
     const completion = await retryHandler.execute(
       () =>
         groq.chat.completions.create({
           model: "openai/gpt-oss-20b",
           messages: [
-            { role: "system", content: SYSTEM_PROMPT },
+            { role: "system", content: prompt },
             {
               role: "user",
-              content: `Generate a security report from the following scanning results:\n\n${chunk}`,
+              content: isSingleChunk
+                ? `Generate a security report from the following scanning results:\n\n${chunk}`
+                : `Here is portion ${index + 1} of ${totalChunks} of scanning results. Write ONLY the findings for this portion:\n\n${chunk}`,
             },
           ],
           temperature: 0.3,
-          max_tokens: 4096,
+          max_tokens: 2048,
         }),
       { context: `Report LLM call chunk ${index + 1}/${totalChunks}` }
     );

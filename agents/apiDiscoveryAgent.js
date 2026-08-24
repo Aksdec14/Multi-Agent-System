@@ -65,9 +65,10 @@ export async function run() {
     retryableStatusCodes: [429, 500, 502, 503],
   });
   const textChunker = new TextChunker({
-    maxTokens: 3500,
+    maxTokens: 1500,
     tokensPerChar: 0.25,
     overlap: 100,
+    maxChunks: 5,
   });
 
   let content = "";
@@ -102,7 +103,7 @@ export async function run() {
         for (const file of codeFiles.slice(0, 30)) {
           try {
             const fileContent = readSourceFile(file);
-            fileContents.push(`--- FILE: ${file} ---\n${fileContent}`);
+            fileContents.push(`--- FILE: ${file} ---\n${fileContent.slice(0, 8000)}`);
           } catch (err) {
             console.warn(
               `[API Discovery Agent] Could not read ${file}: ${err.message}`
@@ -152,7 +153,7 @@ export async function run() {
               },
             ],
             temperature: 0.1,
-            max_tokens: 4096,
+            max_tokens: 2048,
           }),
         { context: `API Discovery LLM call chunk ${index + 1}/${totalChunks}` }
       );
@@ -160,22 +161,21 @@ export async function run() {
       const responseText = completion.choices[0]?.message?.content || "[]";
       
       try {
-        const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-        return jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+        let jsonStr = responseText;
+        
+        const codeBlockMatch = responseText.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (codeBlockMatch) {
+          jsonStr = codeBlockMatch[1];
+        }
+
+        const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          return JSON.parse(jsonMatch[0]);
+        }
+        return [];
       } catch (parseError) {
         console.warn(`[API Discovery Agent] JSON parse failed for chunk ${index + 1}`);
-        return [{
-          method: "UNKNOWN",
-          path: "parse-error",
-          auth: "unknown",
-          params: {},
-          format: "unknown",
-          location: "llm-response",
-          middleware: [],
-          rateLimit: null,
-          validation: "unknown",
-          description: responseText.slice(0, 500),
-        }];
+        return [];
       }
     };
 
