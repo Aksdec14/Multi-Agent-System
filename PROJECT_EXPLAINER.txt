@@ -1,232 +1,329 @@
-Multi-Agent Code Security Scanner — Project Explainer
-======================================================
+Multi-Agent Code Security Scanner — Project Explainer (Simple Language)
+=======================================================================
 
 WHAT THIS PROJECT IS
 --------------------
-A pipeline of three AI agents that work together to scan source code
-(or web pages) for security vulnerabilities. Each agent handles one
-stage of the analysis, and they share a common memory object so each
-stage builds on the previous one. Think of it like an assembly line:
-recon gathers raw data, analysis interprets the risk, and reporting
-packages it into something a developer can act on.
+This is a command-line tool that uses 6 AI agents working one after another
+to scan source code or web pages for security problems. Each agent focuses
+on one job, and they pass their results to the next agent through shared
+memory. Think of it like a factory assembly line — each worker does one
+task, and the product gets more complete at every step.
 
 
-WHY MULTI-AGENT?
-----------------
-A single LLM call trying to do everything at once tends to:
-- Miss nuances when the input is large
-- Produce shallow analysis because it's juggling too many tasks
-- Give inconsistent output quality
+WHY USE MULTIPLE AGENTS INSTEAD OF ONE?
+-----------------------------------------
+If you ask one AI to do everything at once (find bugs, classify them,
+write a report), it gets overwhelmed and misses things. By splitting the
+work into 6 small, focused agents:
 
-By splitting the work into three focused agents, each one gets:
-- A narrow, well-defined system prompt (better output quality)
-- A manageable chunk of input (no context overflow)
-- A clear responsibility (easy to debug, swap, or improve independently)
+  - Each agent gets a clear, simple instruction (better results)
+  - Each agent handles a manageable amount of input (no overload)
+  - You can improve or swap any agent without touching the others
+  - It's easier to figure out which part broke if something goes wrong
 
 
-PROJECT STRUCTURE
------------------
-security-agent-system/
+WHAT TECH DOES THIS USE?
+--------------------------
+  - Language:        JavaScript (Node.js)
+  - AI Provider:     Groq cloud (model: openai/gpt-oss-20b)
+  - HTML Parsing:    Cheerio (like jQuery but on the server)
+  - HTTP Requests:   node-fetch
+  - Config:          dotenv (reads a .env file)
+  - Database:        None — everything lives in memory
+  - Build step:      None — just run with "node index.js"
+
+
+PROJECT FILES AND WHAT THEY DO
+--------------------------------
+
+  index.js                      Entry point. Loads .env, checks for API key,
+                                saves the scan target, and starts the pipeline.
+
+  orchestrator.js               Runs all 6 agents one after another in the
+                                correct order. Nothing fancy — just a sequence.
+
+  memory/sharedMemory.js        A plain JavaScript object that all agents
+                                read from and write to. Stores the scan target,
+                                findings, risks, endpoints, test results,
+                                diagrams, and report path.
+
   agents/
-    reconAgent.js        — Agent 1: reads source, finds attack surface
-    analysisAgent.js     — Agent 2: classifies vulnerabilities, predicts risk
-    reportAgent.js       — Agent 3: writes the final report
-  memory/
-    sharedMemory.js      — shared state object all agents read/write
+    reconAgent.js               Agent 1: Reads your code or fetches a web page.
+                                Tells the AI to find entry points, user inputs,
+                                external calls, authentication, and risky code.
+
+    apiDiscoveryAgent.js        Agent 2a: Reads your code and asks the AI to
+                                find all API endpoints (REST, GraphQL, forms,
+                                WebSockets) with their methods, paths, auth,
+                                parameters, and middleware.
+
+    analysisAgent.js            Agent 2b: Takes the recon findings and asks
+                                the AI to classify each into a vulnerability
+                                type (XSS, SQL injection, etc.), rate severity
+                                and confidence, and suggest fixes.
+
+    apiTestingAgent.js          Agent 3a: Takes the discovered API endpoints
+                                and recon findings. Asks the AI to find
+                                API-specific problems like injection, broken
+                                auth, missing rate limits, data exposure,
+                                bad CORS, and business logic flaws.
+
+    architectureDiagramAgent.js Agent 3b: Reads source code and asks the AI
+                                to generate Mermaid.js diagrams showing the
+                                system architecture, data flow, and security
+                                layout. Saves to architecture.md.
+
+    reportAgent.js              Agent 4: Reads everything the other agents
+                                found. Asks the AI to write a clear report
+                                with a summary, findings table, severity
+                                breakdown, and priority fixes. Saves to
+                                report.txt.
+
   tools/
-    fileTools.js         — reads local files, lists directories
-    fetchTools.js        — fetches web pages, parses HTML with cheerio
-  orchestrator.js        — runs the three agents in sequence
-  index.js               — entry point, loads .env, wires everything
+    fileTools.js                Reads files from disk and lists files in
+                                folders. Filters to common code files.
+
+    fetchTools.js               Downloads a web page, parses the HTML with
+                                cheerio, and extracts page title, scripts,
+                                forms, comments, and meta tags.
+
+    textChunker.js              Splits large code/text into smaller pieces
+                                that fit the AI's token limit. Each piece is
+                                processed separately, then results are merged.
+
+    rateLimiter.js              Controls how fast we make requests. Uses a
+                                "token bucket" system — 2 requests per second
+                                with a burst of 5. Supports per-domain limits.
+
+    retryHandler.js             If a request fails, waits and tries again
+                                (exponential backoff). Also has a circuit
+                                breaker that stops trying after too many
+                                failures in a row.
+
   test-targets/
-    sample.js            — deliberately vulnerable Express app for testing
-  .env                   — GROQ_API_KEY, TARGET_TYPE, TARGET_PATH
-  package.json
+    sample.js                   A fake Express.js app full of intentional
+                                security bugs (SQL injection, XSS, command
+                                injection, path traversal, hardcoded secrets).
+                                Used only for testing the scanner.
 
 
-HOW THE PIPELINE WORKS (step by step)
---------------------------------------
+HOW THE SCANNING PIPELINE WORKS (step by step)
+------------------------------------------------
 
-1. ENTRY POINT (index.js)
-   - Loads environment variables from .env
-   - Reads TARGET_TYPE ("file" or "url") and TARGET_PATH
-   - Writes the target info into shared memory
-   - Calls orchestrator.runPipeline()
+  STEP 1 — YOU RUN THE TOOL
+    You open a terminal and type:  node index.js
+    The tool reads your .env file to get:
+      - Your Groq API key
+      - What to scan (a file/folder, or a URL)
+    It saves the target info into shared memory and calls the orchestrator.
 
-2. SHARED MEMORY (sharedMemory.js)
-   - A plain JavaScript object with four keys:
-     target        — what to scan (file path or URL)
-     reconFindings — array of findings from Agent 1
-     riskPredictions — array of risk analyses from Agent 2
-     reportPath    — path to the written report from Agent 3
-   - Two functions: writeMemory(key, value) and readMemory()
-   - Every agent reads memory before building its prompt,
-     writes memory after getting its LLM response
+  STEP 2 — AGENT 1: RECON (reconAgent.js)
+    This agent reads the target code or fetches the web page.
+    For files: it reads up to 20 code files from your project.
+    For URLs: it downloads the page and extracts HTML structure.
+    If the content is too long, it splits it into chunks.
+    It sends each chunk to the AI and asks: "What are the entry points,
+    user inputs, external calls, authentication logic, and risky patterns?"
+    The AI responds with a list of findings.
+    These findings get saved to shared memory.
 
-3. AGENT 1 — RECON (reconAgent.js)
-   - Reads the target from shared memory
-   - If target is a file: uses fileTools to read the file (or list
-     and read all code files in a directory)
-   - If target is a URL: uses fetchTools to HTTP GET the page, then
-     cheerio parses the HTML into structured data (title, scripts,
-     forms, comments, meta tags)
-   - Sends the raw source/structure to Groq with a system prompt
-     asking it to identify:
-     - Entry points (routes, endpoints, form handlers)
-     - User input locations (query params, body fields)
-     - External calls (DB queries, HTTP requests, exec calls)
-     - Authentication logic (or lack thereof)
-     - Risky patterns (eval, innerHTML, dynamic SQL, hardcoded creds)
-   - Parses the LLM's JSON response into an array of findings
-   - Writes findings to shared memory
+  STEP 3 — AGENT 2a: API DISCOVERY (apiDiscoveryAgent.js)
+    This agent reads up to 30 code files (or the fetched web page).
+    It asks the AI: "Find every API endpoint here — the URL path, HTTP
+    method, authentication required, parameters, middleware, and any
+    input validation."
+    The AI responds with a list of discovered endpoints.
+    These endpoints get saved to shared memory.
 
-4. AGENT 2 — ANALYSIS (analysisAgent.js)
-   - Reads reconFindings from shared memory
-   - Sends them to Groq with a system prompt asking it to:
-     - Classify each finding into a vulnerability class
-       (XSS, SQLi, CSRF, command injection, path traversal, etc.)
-     - Rate severity (low/medium/high)
-     - Rate confidence (low/medium/high)
-     - Describe the risk in plain English
-     - Recommend a mitigation
-     - Predict how the risk could grow as the codebase evolves
-   - Parses the JSON response
-   - Writes riskPredictions to shared memory
+  STEP 4 — AGENT 2b: VULNERABILITY ANALYSIS (analysisAgent.js)
+    This agent reads the recon findings from Step 2.
+    It asks the AI: "For each finding, classify the vulnerability type
+    (XSS, SQL injection, CSRF, etc.), rate the severity (low/medium/high),
+    rate your confidence, explain the risk in plain English, recommend
+    a fix, and predict how the risk might grow."
+    The AI responds with risk predictions.
+    These predictions get saved to shared memory.
 
-5. AGENT 3 — REPORT (reportAgent.js)
-   - Reads both reconFindings and riskPredictions from shared memory
-   - Sends both to Groq with a system prompt asking it to generate
-     a structured plain-text report with:
-     - Executive summary
-     - Findings table (ID, title, severity, confidence, location,
-       description, mitigation)
-     - Severity breakdown (counts of high/medium/low)
-     - Priority recommendations (top 3-5 fixes)
-     - Next steps for the developer
-   - Writes the report text to report.txt on disk
-   - Writes reportPath to shared memory
+  STEP 5 — AGENT 3a: API VULNERABILITY TESTING (apiTestingAgent.js)
+    This agent reads the API endpoints from Step 3 and the recon findings
+    from Step 2.
+    It asks the AI: "For each endpoint, check for injection flaws, broken
+    authentication, missing input validation, missing rate limiting,
+    sensitive data exposure, CORS misconfigurations, and business logic
+    bugs. Include CWE IDs for each issue."
+    The AI responds with API-specific test results.
+    These results get saved to shared memory.
 
-6. ORCHESTRATOR (orchestrator.js)
-   - Simply calls the three agents in sequence:
-     reconAgent.run() -> analysisAgent.run() -> reportAgent.run()
-   - No branching, no parallelism in v1
-   - v2 idea: allow the analysis agent to loop back to recon if it
-     needs more detail on a specific file before finalizing
+  STEP 6 — AGENT 3b: ARCHITECTURE DIAGRAMS (architectureDiagramAgent.js)
+    This agent re-reads the source code files.
+    It asks the AI: "Generate three Mermaid.js diagrams — a component
+    diagram, a data flow diagram, and a security architecture diagram."
+    It saves the diagrams to architecture.md on disk.
+    The diagrams also get saved to shared memory.
 
+  STEP 7 — AGENT 4: FINAL REPORT (reportAgent.js)
+    This agent reads ALL previous findings from shared memory:
+      - Recon findings
+      - API endpoints
+      - Risk predictions
+      - API test results
+      - Architecture diagrams
+    It asks the AI to write a clear, structured report with:
+      - Executive summary (2-3 sentence overview)
+      - Findings table (ID, title, severity, confidence, location,
+        description, recommended fix)
+      - Severity breakdown (how many high/medium/low issues)
+      - Top priority fixes (what to fix first)
+      - Next steps for the developer
+    It saves the report to report.txt on disk.
 
-TOOLS
------
-
-fileTools.js:
-  readSourceFile(path)
-    - Resolves the path, checks it exists, reads it with fs.readFileSync
-    - Returns the file contents as a UTF-8 string
-  listFiles(dir)
-    - Recursively walks a directory
-    - Returns an array of all file paths found
-    - Filters by common code extensions (.js, .ts, .py, .html, etc.)
-
-fetchTools.js:
-  fetchAndParseHTML(url)
-    - HTTP GETs the URL using node-fetch
-    - Loads the HTML into cheerio
-    - Extracts: page title, all <script> tags (inline vs external),
-      all <form> tags (action, method, input fields), all HTML comments,
-      all <meta> tags
-    - Returns a structured object (no exploit logic, pure recon)
+  DONE
+    You now have two files:
+      - report.txt         The security report
+      - architecture.md    The Mermaid.js diagrams
 
 
-TEST TARGET (test-targets/sample.js)
-------------------------------------
-A deliberately vulnerable Express.js app containing:
-- SQL injection (string concatenation in query)
-- XSS (unescaped user input in HTML response)
-- Command injection (child_process.exec with user input)
-- Path traversal (user-controlled file path in readFileSync)
-- Hardcoded credentials (DB_PASSWORD, JWT_SECRET in source)
-- eval() with user input
-- Missing authentication on admin endpoints
-- No input validation anywhere
+SHARED MEMORY — HOW AGENTS TALK TO EACH OTHER
+-----------------------------------------------
+Agents never call each other directly. They all read and write to one
+shared memory object (sharedMemory.js). It has these keys:
 
-This exists solely for testing the scanner against. It is never
-run as a real server.
+  target            What to scan (file path or URL)
+  reconFindings     List of findings from the recon agent
+  apiEndpoints      List of API endpoints from the discovery agent
+  riskPredictions   List of risk analyses from the analysis agent
+  apiTestResults    List of API test results from the testing agent
+  architectureDiagrams  Mermaid.js diagrams from the diagram agent
+  reportPath        Path to the saved report file
 
-
-LEGAL AND ETHICAL SCOPE
-------------------------
-- Only scans code you own or have explicit permission to test
-- Only performs passive recon (reads code, parses HTML structure)
-- Never generates working exploit payloads or injection strings
-- Every agent's system prompt is scoped to "identify and explain
-  risk," not "produce an exploit"
-- The cheerio-based fetchTools only reads publicly accessible pages
-  and does not send payloads or attempt exploitation
+Two simple functions control access:
+  writeMemory(key, value)  — saves data
+  readMemory()             — returns all data
 
 
-DESIGN DECISIONS
-----------------
-1. Groq SDK for LLM calls
-   - Chose Groq for fast inference and a generous free tier
-   - The model is configurable (currently set to openai/gpt-oss-120b)
-   - All three agents use the same model but with different system
-     prompts and temperature settings
+THE TOOLS — HELPER UTILITIES
+-------------------------------
 
-2. Shared memory as a plain object
-   - No database, no file-based cache, no message queue
-   - Simple and fast for a single-pipeline architecture
-   - Easy to extend: add new keys for v2 features
+  fileTools.js
+    readSourceFile(path)     Reads a single file and returns its text.
+    listFiles(dir)           Walks a folder and returns all code file paths.
 
-3. JSON output from agents
-   - Each agent is prompted to return a JSON array
-   - Parsing is done with regex fallback (extracts [...] from response)
-   - If parsing fails, the raw text is stored as a single finding
-     so the pipeline never silently drops data
+  fetchTools.js
+    fetchAndParseHTML(url)   Downloads a page, extracts title, scripts,
+                             forms, comments, and meta tags using cheerio.
+                             Respects rate limits and retries on failure.
 
-4. Sequential orchestration
-   - v1 runs agents in strict order: recon -> analysis -> report
-   - This is correct because each agent depends on the previous one's
-     output
-   - v2 could add a feedback loop where analysis agent requests
-     additional recon on specific files before finalizing
+  textChunker.js
+    TextChunker              Splits text into chunks under 3500 tokens so
+                             the AI can process them. After processing each
+                             chunk, mergeResults() combines the outputs.
+
+  rateLimiter.js
+    RateLimiter              Controls request speed for a single domain.
+    DomainRateLimiterManager Tracks limits per domain separately.
+    Default: 2 requests/second, burst of 5.
+
+  retryHandler.js
+    RetryHandler             Retries failed requests with increasing waits.
+    CircuitBreaker           Stops trying after too many failures.
+    RobustRetryHandler       Combines both for maximum reliability.
 
 
-WHAT I'D TELL AN INTERVIEWER
-------------------------------
-"I built a multi-agent security scanning pipeline where three
-specialized AI agents share a common memory object and work in
-sequence to analyze source code for vulnerabilities.
+THE TEST FILE (test-targets/sample.js)
+----------------------------------------
+A fake Express.js app with every common security bug on purpose:
+  - SQL injection (string concatenation in database queries)
+  - XSS (user input printed directly into HTML)
+  - Command injection (running shell commands with user input)
+  - Path traversal (user controls which file to read)
+  - Hardcoded secrets (password and API key in the source code)
+  - eval() with user input
+  - Admin endpoints with no authentication
+  - No input validation anywhere
 
-The first agent does recon: it reads the target code or fetches and
-parses a web page, then asks the LLM to identify entry points, user
-input locations, external calls, auth logic, and risky patterns.
+This file is never run as a real server. It exists only so you can
+test the scanner and see if it finds all the bugs.
 
-The second agent takes those findings and classifies them into
-vulnerability classes like XSS, SQLi, command injection, etc. It
-rates severity and confidence, describes the risk, and recommends
-mitigations.
 
-The third agent reads both sets of outputs and generates a structured
-plain-text report with a findings table, severity breakdown, and
-priority recommendations.
+LEGAL AND ETHICAL RULES
+-------------------------
+  - Only scan code you own or have permission to test
+  - The tool only reads code and HTML — it never sends attack payloads
+  - No exploit code is ever generated by any agent
+  - Each agent's instructions explicitly say "identify and explain risk,
+    do NOT produce exploit code"
+  - When scanning URLs, it only fetches publicly accessible pages
 
-The key design choices were:
-- Splitting the work into focused agents with narrow system prompts,
-  which produces better and more consistent LLM output than one
-  monolithic prompt
-- Using a shared memory object so each stage builds on the last
-  without needing a database or message queue
-- Keeping agents scoped to risk identification only — they never
-  produce exploit code or attack payloads
-- Making it extensible: v2 could add a feedback loop where the
-  analysis agent loops back to recon for more detail on specific
-  files before finalizing predictions"
 
-Future improvements I'd mention:
-- Adding a feedback loop between analysis and recon agents
-- Supporting batch scanning of multiple targets
-- Adding a cost tracker (tokens used per agent, per run)
-- Adding a cache layer so re-scanning the same unchanged files
-  skips the LLM call
-- Writing reports in Markdown or HTML instead of plain text
-- Adding a CLI with flags for target type, output format, model
-  selection, and verbosity
+DESIGN DECISIONS — WHY IT'S BUILT THIS WAY
+---------------------------------------------
+
+  1. Why Groq for AI?
+     Fast inference speed and a generous free tier. The model is
+     configurable in the code (currently openai/gpt-oss-20b).
+
+  2. Why shared memory instead of a database?
+     Simple. No setup required. Fast. Easy to extend by adding new keys.
+     Perfect for a single-pipeline tool.
+
+  3. Why JSON output from agents?
+     Makes it easy to parse and pass structured data between agents.
+     If JSON parsing fails, the raw text is saved so no data is lost.
+
+  4. Why sequential (not parallel) agents?
+     Each agent depends on the previous one's output. Recon must happen
+     before analysis. Analysis must happen before reporting.
+
+  5. Why passive-only (no exploit generation)?
+     Ethics and legality. The tool is for finding and explaining risks,
+     not for attacking systems.
+
+  6. Why chunking?
+     AI models have a limit on how much text they can process at once.
+     Large codebases get split into smaller pieces, each processed
+     separately, then results are merged.
+
+
+INTERVIEW TALKING POINTS
+---------------------------
+"I built a multi-agent security scanner where 6 specialized AI agents
+share a common memory and work in sequence to analyze code for bugs.
+
+Agent 1 (Recon) reads the target and identifies the attack surface —
+entry points, user inputs, external calls, and risky patterns.
+
+Agent 2a (API Discovery) finds all API endpoints with their methods,
+paths, authentication, and parameters.
+
+Agent 2b (Analysis) classifies the recon findings into vulnerability
+types like XSS, SQL injection, and command injection. It rates severity
+and confidence, and recommends fixes.
+
+Agent 3a (API Testing) analyzes each discovered endpoint for
+API-specific security flaws including injection, broken auth, missing
+rate limiting, and data exposure.
+
+Agent 3b (Architecture Diagrams) generates Mermaid.js diagrams showing
+the system components, data flow, and security architecture.
+
+Agent 4 (Report) reads everything and writes a clear report with a
+summary, findings table, severity breakdown, and priority fixes.
+
+Key design choices:
+  - Splitting work into focused agents produces better AI output than
+    one big prompt
+  - Shared memory keeps things simple with no database needed
+  - Passive-only philosophy — we identify risks, never generate exploits
+  - Rate limiting and retry logic make it reliable against API failures"
+
+
+FUTURE IMPROVEMENTS
+---------------------
+  - Feedback loop where analysis agent asks recon for more details
+  - Batch scanning of multiple targets at once
+  - Cost tracker showing tokens used per agent per run
+  - Cache layer so unchanged files skip the AI call
+  - Reports in Markdown or HTML instead of plain text
+  - CLI flags for target type, output format, model, and verbosity
+  - Support for more languages (currently focuses on JS/Node code)
+  - Web dashboard to view and compare reports over time
