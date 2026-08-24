@@ -3,6 +3,9 @@ const memory = {
   reconFindings: [],
   riskPredictions: [],
   reportPath: "",
+  apiEndpoints: [],
+  apiTestResults: [],
+  architectureDiagrams: null,
 };
 
 export function writeMemory(key, value) {

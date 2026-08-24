@@ -1,11 +1,30 @@
 import fetch from "node-fetch";
 import * as cheerio from "cheerio";
+import { DomainRateLimiterManager } from "./rateLimiter.js";
+import { RetryHandler } from "./retryHandler.js";
+
+const rateLimiterManager = new DomainRateLimiterManager({
+  requestsPerSecond: 2,
+  burstSize: 5,
+});
+
+const retryHandler = new RetryHandler({
+  maxRetries: 3,
+  baseDelay: 1000,
+  retryableStatusCodes: [429, 500, 502, 503, 504],
+});
 
 export async function fetchAndParseHTML(url) {
-  const response = await fetch(url, {
-    headers: { "User-Agent": "SecurityScanner/1.0 (passive recon)" },
-    timeout: 15000,
-  });
+  await rateLimiterManager.wait(url);
+
+  const response = await retryHandler.execute(
+    () =>
+      fetch(url, {
+        headers: { "User-Agent": "SecurityScanner/1.0 (passive recon)" },
+        timeout: 15000,
+      }),
+    { context: `Fetch ${new URL(url).hostname}` }
+  );
 
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);

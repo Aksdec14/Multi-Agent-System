@@ -2,6 +2,8 @@ import Groq from "groq-sdk";
 import { readMemory, writeMemory } from "../memory/sharedMemory.js";
 import { readSourceFile, listFiles } from "../tools/fileTools.js";
 import { fetchAndParseHTML } from "../tools/fetchTools.js";
+import { RetryHandler } from "../tools/retryHandler.js";
+import { TextChunker, mergeResults } from "../tools/textChunker.js";
 
 const SYSTEM_PROMPT = `You are a recon agent for a security scanning pipeline. Given source code or parsed page structure, you summarize the attack surface. Your job is to identify:
 
@@ -23,6 +25,16 @@ You are identifying and explaining risks only. Keep descriptions factual and act
 export async function run() {
   console.log("[Recon Agent] Starting recon...");
   const mem = readMemory();
+  const retryHandler = new RetryHandler({
+    maxRetries: 3,
+    baseDelay: 1000,
+    retryableStatusCodes: [429, 500, 502, 503],
+  });
+  const textChunker = new TextChunker({
+    maxTokens: 3500,
+    tokensPerChar: 0.25,
+    overlap: 100,
+  });
   let content = "";
 
   if (mem.target.type === "file") {
@@ -61,26 +73,35 @@ export async function run() {
 
   const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-  const completion = await groq.chat.completions.create({
-    model: "openai/gpt-oss-120b",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: `Analyze the following source code / page structure and produce your recon findings as a JSON array:\n\n${content.slice(0, 30000)}` },
-    ],
-    temperature: 0.2,
-    max_tokens: 4096,
-  });
+  const processChunk = async (chunk, index, totalChunks) => {
+    console.log(`[Recon Agent] Processing chunk ${index + 1}/${totalChunks}`);
+    
+    const completion = await retryHandler.execute(
+      () =>
+        groq.chat.completions.create({
+          model: "openai/gpt-oss-20b",
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: `Analyze the following source code / page structure and produce your recon findings as a JSON array:\n\n${chunk}` },
+          ],
+          temperature: 0.2,
+          max_tokens: 4096,
+        }),
+      { context: `Recon LLM call chunk ${index + 1}/${totalChunks}` }
+    );
 
-  const responseText = completion.choices[0]?.message?.content || "[]";
-  console.log("[Recon Agent] Raw LLM response length:", responseText.length);
+    const responseText = completion.choices[0]?.message?.content || "[]";
+    
+    try {
+      const jsonMatch = responseText.match(/\[[\s\S]*\]/);
+      return jsonMatch ? JSON.parse(jsonMatch[0]) : [];
+    } catch {
+      return [{ category: "info", location: "n/a", detail: responseText, initialSeverity: "low" }];
+    }
+  };
 
-  let findings;
-  try {
-    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-    findings = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
-  } catch {
-    findings = [{ category: "info", location: "n/a", detail: responseText, initialSeverity: "low" }];
-  }
+  const chunkResults = await textChunker.processChunks(content, processChunk);
+  const findings = mergeResults(chunkResults);
 
   writeMemory("reconFindings", findings);
   console.log(`[Recon Agent] Done. ${findings.length} findings stored.`);
