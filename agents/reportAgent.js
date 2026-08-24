@@ -14,7 +14,7 @@ Your report should include:
 4. API Endpoint Analysis — summary of discovered endpoints and their security status
 5. API Vulnerabilities — table of vulnerabilities found in API endpoints
 6. Security Architecture — analysis of security boundaries and trust zones
-7. Severity Breakdown — count of high/medium/low findings
+7. Severity Breakdown — count of critical/high/medium/low findings
 8. Priority Recommendations — top 3-5 things to fix first
 9. Next Steps — what a developer should do after reading this report
 

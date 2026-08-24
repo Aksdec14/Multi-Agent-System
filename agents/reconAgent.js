@@ -17,10 +17,16 @@ Output a structured JSON array of findings. Each finding should have:
 - category: one of "entry_point", "user_input", "external_call", "auth_logic", "risky_pattern", "info"
 - location: file path or URL section where the finding was observed
 - detail: plain-English description of what you found
-- initialSeverity: "low", "medium", or "high" (your initial gut feel)
+- initialSeverity: "critical", "high", "medium", or "low" (your initial gut feel)
 
 Do NOT write exploit code. Do NOT produce injection strings or attack payloads.
-You are identifying and explaining risks only. Keep descriptions factual and actionable.`;
+You are identifying and explaining risks only. Keep descriptions factual and actionable.
+
+SEVERITY GUIDELINES:
+- critical: Active exploitation possible, authentication bypass, SQL injection, remote code execution, hardcoded credentials
+- high: Significant security weakness that could lead to data breach or privilege escalation
+- medium: Security weakness that requires specific conditions to exploit
+- low: Minor issue or best practice violation`;
 
 export async function run() {
   console.log("[Recon Agent] Starting recon...");

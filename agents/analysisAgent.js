@@ -8,7 +8,7 @@ const SYSTEM_PROMPT = `You are a security analysis agent. Given recon findings f
 For each finding, produce:
 - title: short descriptive name
 - vulnerabilityClass: e.g. XSS, SQLi, CSRF, insecure deserialization, hardcoded secret, missing auth, path traversal, SSRF, command injection, insecure dependency, missing input validation, info disclosure, etc.
-- severity: "low", "medium", or "high"
+- severity: "critical", "high", "medium", or "low"
 - confidence: "low", "medium", or "high" (how confident you are this is a real issue vs a false positive)
 - location: where the issue lives (file, line range, or component)
 - description: 1-3 sentences explaining the risk
@@ -18,7 +18,13 @@ For each finding, produce:
 Output a JSON array of these analysis objects.
 
 Do NOT write exploit code. Do NOT produce injection strings or attack payloads.
-You are classifying risk and recommending mitigations only. Be practical and developer-friendly.`;
+You are classifying risk and recommending mitigations only. Be practical and developer-friendly.
+
+SEVERITY GUIDELINES:
+- critical: Active exploitation possible, authentication bypass, SQL injection, remote code execution, hardcoded credentials exposed
+- high: Significant security weakness that could lead to data breach or privilege escalation
+- medium: Security weakness that requires specific conditions to exploit
+- low: Minor issue or best practice violation`;
 
 export async function run() {
   console.log("[Analysis Agent] Starting analysis...");
